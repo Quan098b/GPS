@@ -9,4 +9,6 @@
     <string name="disconnect">Ngắt kết nối</string>
     <string name="start_sending">Bắt đầu gửi GPS</string>
     <string name="stop_sending">Dừng gửi GPS</string>
+    <string name="message_hint">Nhập nội dung cần cứu trợ</string>
+    <string name="send_rescue">GỬI YÊU CẦU CỨU HỘ</string>
 </resources>

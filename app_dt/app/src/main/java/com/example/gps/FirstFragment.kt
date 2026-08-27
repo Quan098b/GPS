@@ -7,7 +7,6 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
@@ -50,9 +49,9 @@ class FirstFragment : Fragment(), LocationListener {
     private var gpsCharacteristic: BluetoothGattCharacteristic? = null
     private var scanning = false
     private var trackingLocation = false
-    private var notificationsReady = false
-    private var pendingButtonRequest = false
-    private var latestPayload: String? = null
+    private var bleReady = false
+    private var pendingManualSend = false
+    private var latestLocation: Location? = null
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -94,6 +93,11 @@ class FirstFragment : Fragment(), LocationListener {
 
         binding.buttonConnect.setOnClickListener {
             if (bluetoothGatt != null) disconnect() else requestPermissionsAndScan()
+        }
+
+        binding.buttonSendRescue.isEnabled = false
+        binding.buttonSendRescue.setOnClickListener {
+            onSendRescueClicked()
         }
     }
 
@@ -192,8 +196,8 @@ class FirstFragment : Fragment(), LocationListener {
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     gpsCharacteristic = null
-                    notificationsReady = false
-                    pendingButtonRequest = false
+                    bleReady = false
+                    pendingManualSend = false
                     bluetoothGatt = null
                     gatt.close()
                     stopLocationTracking()
@@ -216,67 +220,16 @@ class FirstFragment : Fragment(), LocationListener {
                 return
             }
             gpsCharacteristic = characteristic
-            if (!enableButtonNotifications(gatt, characteristic)) {
-                showStatus("Khong the bat thong bao nut nhan")
-                disconnect()
-            }
-        }
-
-        override fun onDescriptorWrite(
-            gatt: BluetoothGatt,
-            descriptor: BluetoothGattDescriptor,
-            status: Int
-        ) {
-            if (descriptor.uuid != CLIENT_CONFIG_UUID) return
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                showStatus("Khong the nhan lenh tu nut ESP32")
-                disconnect()
-                return
-            }
-            notificationsReady = true
+            bleReady = true
             mainHandler.post {
                 _binding?.apply {
                     buttonConnect.text = getString(R.string.disconnect)
                     buttonConnect.isEnabled = true
+                    buttonSendRescue.isEnabled = true
+                    textStatus.text = "Da ket noi ESP32. Dang lay vi tri..."
                 }
                 startLocationTracking()
             }
-        }
-
-        override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            value: ByteArray
-        ) {
-            handleEspCommand(value)
-        }
-
-        @Suppress("DEPRECATION")
-        override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic
-        ) {
-            handleEspCommand(characteristic.value ?: return)
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun enableButtonNotifications(
-        gatt: BluetoothGatt,
-        characteristic: BluetoothGattCharacteristic
-    ): Boolean {
-        if (!gatt.setCharacteristicNotification(characteristic, true)) return false
-        val descriptor = characteristic.getDescriptor(CLIENT_CONFIG_UUID) ?: return false
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeDescriptor(
-                descriptor,
-                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            ) == BluetoothGatt.GATT_SUCCESS
-        } else {
-            @Suppress("DEPRECATION")
-            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            @Suppress("DEPRECATION")
-            gatt.writeDescriptor(descriptor)
         }
     }
 
@@ -285,8 +238,8 @@ class FirstFragment : Fragment(), LocationListener {
         stopScan()
         stopLocationTracking()
         gpsCharacteristic = null
-        notificationsReady = false
-        pendingButtonRequest = false
+        bleReady = false
+        pendingManualSend = false
         bluetoothGatt?.disconnect()
         bluetoothGatt?.close()
         bluetoothGatt = null
@@ -295,7 +248,7 @@ class FirstFragment : Fragment(), LocationListener {
 
     @SuppressLint("MissingPermission")
     private fun startLocationTracking() {
-        if (trackingLocation || !hasAllPermissions() || !notificationsReady) return
+        if (trackingLocation || !hasAllPermissions() || !bleReady) return
         val gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
         val networkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
         if (!gpsEnabled && !networkEnabled) {
@@ -304,7 +257,6 @@ class FirstFragment : Fragment(), LocationListener {
             return
         }
         trackingLocation = true
-        binding.textStatus.text = "Da ket noi. Dang cho vi tri..."
         if (gpsEnabled) locationManager.requestLocationUpdates(
             LocationManager.GPS_PROVIDER, LOCATION_INTERVAL_MS, 1f, this
         )
@@ -319,15 +271,7 @@ class FirstFragment : Fragment(), LocationListener {
     }
 
     override fun onLocationChanged(location: Location) {
-        val payload = String.format(
-            Locale.US,
-            "GPS,%.6f,%.6f,%.1f,%d\n",
-            location.latitude,
-            location.longitude,
-            location.accuracy,
-            location.time
-        )
-        latestPayload = payload
+        latestLocation = location
         _binding?.textLocation?.text = String.format(
             Locale.US,
             "Vi do: %.6f\nKinh do: %.6f\nSai so: %.1f m",
@@ -335,33 +279,67 @@ class FirstFragment : Fragment(), LocationListener {
             location.longitude,
             location.accuracy
         )
-        if (pendingButtonRequest) sendLatestLocation()
-        else _binding?.textStatus?.text = "San sang. Hay nhan nut GPIO 3"
-    }
-
-    private fun handleEspCommand(value: ByteArray) {
-        if (String(value, StandardCharsets.UTF_8).trim() != BUTTON_COMMAND) return
-        mainHandler.post {
-            pendingButtonRequest = true
-            if (latestPayload == null) {
-                _binding?.textStatus?.text = "Da nhan nut, dang cho GPS..."
-            } else {
-                sendLatestLocation()
-            }
+        if (pendingManualSend) {
+            sendRescueRequest()
+        } else {
+            _binding?.textStatus?.text = "San sang gui yeu cau cuu ho"
         }
     }
 
-    private fun sendLatestLocation() {
-        val payload = latestPayload ?: return
+    private fun onSendRescueClicked() {
+        if (!bleReady || bluetoothGatt == null) {
+            showStatus("Chua ket noi ESP32")
+            return
+        }
+        if (latestLocation == null) {
+            pendingManualSend = true
+            showStatus("Dang cho vi tri GPS...")
+            return
+        }
+        sendRescueRequest()
+    }
+
+    private fun sendRescueRequest() {
+        val location = latestLocation
+        if (location == null) {
+            pendingManualSend = true
+            showStatus("Dang cho vi tri GPS...")
+            return
+        }
+
+        val rawMessage = _binding?.editMessage?.text?.toString()?.trim().orEmpty()
+        val safeMessage = if (rawMessage.isEmpty()) {
+            DEFAULT_MESSAGE
+        } else {
+            rawMessage
+                .replace("|", " ")
+                .replace("\n", " ")
+                .replace("\r", " ")
+                .trim()
+        }
+
+        val timestamp = if (location.time > 0) location.time else System.currentTimeMillis()
+
+        val payload = String.format(
+            Locale.US,
+            "SOS|%s|%.6f|%.6f|%.1f|%d|%s\n",
+            DEVICE_ID,
+            location.latitude,
+            location.longitude,
+            location.accuracy,
+            timestamp,
+            safeMessage
+        )
+
         if (writePayload(payload)) {
-            pendingButtonRequest = false
+            pendingManualSend = false
             _binding?.apply {
-                textStatus.text = "Da gui vi tri do nut GPIO 3"
+                textStatus.text = "Da gui yeu cau cuu ho"
                 textLastPayload.text = "Da gui: ${payload.trim()}"
             }
         } else {
-            pendingButtonRequest = false
-            _binding?.textStatus?.text = "Gui BLE that bai, hay nhan lai"
+            pendingManualSend = false
+            _binding?.textStatus?.text = "Gui yeu cau cuu ho that bai"
         }
     }
 
@@ -394,13 +372,14 @@ class FirstFragment : Fragment(), LocationListener {
                 textStatus.text = message
                 buttonConnect.text = getString(R.string.connect)
                 buttonConnect.isEnabled = true
+                buttonSendRescue.isEnabled = false
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        if (notificationsReady && !trackingLocation && hasAllPermissions()) {
+        if (bleReady && !trackingLocation && hasAllPermissions()) {
             startLocationTracking()
         }
     }
@@ -411,19 +390,19 @@ class FirstFragment : Fragment(), LocationListener {
         bluetoothGatt?.close()
         bluetoothGatt = null
         gpsCharacteristic = null
-        notificationsReady = false
-        pendingButtonRequest = false
+        bleReady = false
+        pendingManualSend = false
         _binding = null
         super.onDestroyView()
     }
 
     companion object {
         private const val DEVICE_NAME = "GPS-ESP32"
-        private const val BUTTON_COMMAND = "SEND"
+        private const val DEVICE_ID = "RESCUE-001"
+        private const val DEFAULT_MESSAGE = "Can cuu ho"
         private const val SCAN_TIMEOUT_MS = 10_000L
         private const val LOCATION_INTERVAL_MS = 2_000L
         val SERVICE_UUID: UUID = UUID.fromString("12345678-1234-5678-1234-56789abcdef0")
         val CHARACTERISTIC_UUID: UUID = UUID.fromString("12345678-1234-5678-1234-56789abcdef1")
-        val CLIENT_CONFIG_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
 }
