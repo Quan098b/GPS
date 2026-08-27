@@ -1,0 +1,73 @@
+{
+  "name": "lora-gps-rescue",
+  "version": "1.0.0",
+  "private": true,
+  "description": "He thong dieu phoi cuu ho nhan vi tri GPS qua LoRa",
+  "author": "GPS Rescue System",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "node server/app.js",
+    "dev": "nodemon server/app.js",
+    "electron": "node electron/run-dev.js",
+    "electron:dev": "node electron/run-dev.js",
+    "build:win": "electron-builder --win nsis --x64",
+    "build:portable": "electron-builder --win portable --x64 -c.artifactName=\"LoRa GPS Rescue Portable.${ext}\"",
+    "test": "node --test",
+    "check": "node --check server/app.js && node --check server/config/database.js && node --check server/controllers/deviceController.js && node --check server/controllers/rescueController.js && node --check server/services/rescueService.js && node --check electron/main.js && node --check electron/preload.js && node --check electron/config.js && node --check electron/run-dev.js && node --check public/js/app.js && node --check public/js/map.js"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "bootstrap": "^5.3.3",
+    "bootstrap-icons": "^1.11.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "electron-log": "^5.4.3",
+    "express": "^4.21.2",
+    "leaflet": "^1.9.4",
+    "mysql2": "^3.12.0",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
+    "nodemon": "^3.1.9",
+    "socket.io-client": "^4.8.1"
+  },
+  "build": {
+    "appId": "vn.khanhquan.loragpsrescue",
+    "productName": "LoRa GPS Rescue",
+    "copyright": "Copyright © 2026 GPS Rescue System",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "public/**/*",
+      "database/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LoRa GPS Rescue",
+      "uninstallDisplayName": "LoRa GPS Rescue",
+      "artifactName": "LoRa GPS Rescue Setup ${version}.${ext}"
+    }
+  }
+}

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1118">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.tile.openstreetmap.org; font-src 'self'; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <title>Hệ thống định vị & cứu hộ LoRa</title>
+  <link href="/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+  <link href="/vendor/bootstrap-icons/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link href="/vendor/leaflet/leaflet.css" rel="stylesheet">
+  <link href="/css/style.css" rel="stylesheet">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-wrap">
+      <div class="brand-mark"><i class="bi bi-broadcast-pin"></i></div>
+      <div>
+        <p class="eyebrow">TRUNG TÂM ĐIỀU PHỐI</p>
+        <h1>HỆ THỐNG ĐỊNH VỊ & CỨU HỘ LORA</h1>
+      </div>
+    </div>
+    <div class="header-status">
+      <span id="serverStatus" class="server-state is-connecting"><span class="status-dot"></span> ĐANG KẾT NỐI</span>
+      <time id="liveClock" class="live-clock">--:--:--</time>
+    </div>
+  </header>
+
+  <nav class="view-tabs" aria-label="Chế độ xem">
+    <button class="view-tab active" data-view="operations"><i class="bi bi-grid-1x2-fill"></i> Điều phối trực tiếp</button>
+    <button class="view-tab" data-view="history"><i class="bi bi-clock-history"></i> Lịch sử cứu hộ</button>
+    <button class="view-tab" data-view="settings"><i class="bi bi-gear-fill"></i> Cài đặt</button>
+  </nav>
+
+  <div id="internetWarning" class="internet-warning d-none"><i class="bi bi-wifi-off"></i> Không có Internet - dữ liệu GPS vẫn đang được ghi nhận nhưng lớp bản đồ trực tuyến không khả dụng.</div>
+
+  <main>
+    <section id="operationsView" class="view-panel active">
+      <div class="system-strip">
+        <span class="system-title">THÔNG TIN SERVER</span>
+        <span><small>SERVER</small><strong id="systemServer">ONLINE</strong></span>
+        <span><small>DATABASE</small><strong id="systemDatabase" class="is-offline">--</strong></span>
+        <span class="api-address"><small>LORA API</small><strong id="gatewayApi">Đang xác định địa chỉ LAN...</strong></span>
+        <span><small>API PORT</small><strong id="systemPort">--</strong></span>
+        <button id="copyApiButton" class="copy-api" title="Sao chép địa chỉ API"><i class="bi bi-copy"></i> SAO CHÉP API</button>
+      </div>
+      <div class="stats-strip">
+        <article class="stat-block stat-sos"><span class="stat-icon"><i class="bi bi-exclamation-triangle-fill"></i></span><div><strong id="statSOS">0</strong><span>SOS đang chờ</span></div></article>
+        <article class="stat-block stat-confirmed"><span class="stat-icon"><i class="bi bi-check-circle-fill"></i></span><div><strong id="statConfirmed">0</strong><span>Đã xác nhận</span></div></article>
+        <article class="stat-block stat-rescuing"><span class="stat-icon"><i class="bi bi-truck-front-fill"></i></span><div><strong id="statRescuing">0</strong><span>Đang cứu hộ</span></div></article>
+        <article class="stat-block stat-rescued"><span class="stat-icon"><i class="bi bi-shield-check"></i></span><div><strong id="statRescued">0</strong><span>Đã cứu</span></div></article>
+        <article class="stat-block stat-online"><span class="stat-icon"><i class="bi bi-router-fill"></i></span><div><strong id="statOnline">0</strong><span>Thiết bị online</span></div></article>
+      </div>
+
+      <div class="operations-layout">
+        <aside class="incident-pane">
+          <div class="pane-heading">
+            <div><p class="eyebrow">SỰ KIỆN</p><h2>Danh sách cứu hộ</h2></div>
+            <button id="refreshButton" class="icon-button" title="Làm mới"><i class="bi bi-arrow-clockwise"></i></button>
+          </div>
+          <div class="filter-row" role="group" aria-label="Lọc trạng thái">
+            <button class="filter-chip active" data-status="ACTIVE">Đang xử lý</button>
+            <button class="filter-chip" data-status="ALL">Tất cả</button>
+            <button class="filter-chip" data-status="SOS">SOS</button>
+          </div>
+          <div id="incidentList" class="incident-list" aria-live="polite"></div>
+        </aside>
+
+        <section class="map-pane" aria-label="Bản đồ cứu hộ">
+          <div id="map"></div>
+          <div class="map-overlay map-legend">
+            <span><i class="legend-dot sos"></i> SOS</span>
+            <span><i class="legend-dot confirmed"></i> Xác nhận</span>
+            <span><i class="legend-dot rescuing"></i> Đang cứu</span>
+            <span><i class="legend-dot rescued"></i> Đã cứu</span>
+          </div>
+          <button id="fitMapButton" class="map-control" title="Hiển thị tất cả điểm"><i class="bi bi-arrows-fullscreen"></i></button>
+        </section>
+      </div>
+    </section>
+
+    <section id="historyView" class="view-panel history-view">
+      <div class="history-header">
+        <div><p class="eyebrow">NHẬT KÝ VẬN HÀNH</p><h2>Lịch sử cứu hộ</h2></div>
+        <form id="historyFilters" class="history-filters">
+          <label><span>Ngày</span><input id="historyDate" type="date" class="form-control"></label>
+          <label><span>Thiết bị</span><input id="historyDevice" type="search" class="form-control" placeholder="RESCUE-001"></label>
+          <label><span>Trạng thái</span><select id="historyStatus" class="form-select"><option value="">Tất cả</option><option>SOS</option><option>CONFIRMED</option><option>RESCUING</option><option>RESCUED</option><option>CANCELLED</option></select></label>
+          <button class="btn btn-primary" type="submit"><i class="bi bi-funnel-fill"></i> Lọc</button>
+          <button id="clearHistoryFilters" class="icon-button" type="button" title="Xóa bộ lọc"><i class="bi bi-x-lg"></i></button>
+        </form>
+      </div>
+      <div class="table-wrap">
+        <table class="history-table">
+          <thead><tr><th>ID</th><th>Thiết bị</th><th>Thời gian SOS</th><th>Xác nhận</th><th>Bắt đầu cứu</th><th>Hoàn thành</th><th>Trạng thái</th><th>Tọa độ cuối</th><th>Người xác nhận</th></tr></thead>
+          <tbody id="historyTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="settingsView" class="view-panel settings-view">
+      <div class="settings-heading"><p class="eyebrow">CẤU HÌNH ỨNG DỤNG</p><h2>Cài đặt</h2><p>Thay đổi cấu hình có hiệu lực đầy đủ sau khi khởi động lại server nội bộ.</p></div>
+      <form id="settingsForm" class="settings-form">
+        <fieldset><legend>DATABASE</legend><div class="settings-grid">
+          <label><span>Host</span><input id="settingDbHost" class="form-control" required></label>
+          <label><span>Port</span><input id="settingDbPort" type="number" min="1" max="65535" class="form-control" required></label>
+          <label><span>User</span><input id="settingDbUser" class="form-control" required></label>
+          <label><span>Password</span><input id="settingDbPassword" type="password" class="form-control"></label>
+          <label class="span-2"><span>Database</span><input id="settingDbName" class="form-control" required></label>
+        </div></fieldset>
+        <fieldset><legend>SERVER</legend><div class="settings-grid">
+          <label><span>API Port ưu tiên</span><input id="settingApiPort" type="number" min="1" max="65535" class="form-control" required></label>
+          <label><span>Gateway API Key</span><input id="settingGatewayKey" type="password" class="form-control" required></label>
+        </div></fieldset>
+        <fieldset><legend>APPLICATION</legend><div class="setting-toggles">
+          <label><input id="settingStartWindows" type="checkbox"> <span>Khởi động cùng Windows</span></label>
+          <label><input id="settingMinimizeTray" type="checkbox"> <span>Thu nhỏ xuống system tray</span></label>
+        </div></fieldset>
+        <div id="settingsMessage" class="settings-message d-none"></div>
+        <div class="settings-actions">
+          <button id="testMysqlButton" type="button" class="btn btn-outline-info"><i class="bi bi-database-check"></i> KIỂM TRA MYSQL</button>
+          <button id="startMysqlButton" type="button" class="btn btn-outline-light"><i class="bi bi-play-circle"></i> THỬ KHỞI ĐỘNG MYSQL</button>
+          <button id="saveSettingsButton" type="submit" class="btn btn-primary"><i class="bi bi-floppy-fill"></i> LƯU</button>
+          <button id="restartServerButton" type="button" class="btn btn-warning"><i class="bi bi-arrow-repeat"></i> KHỞI ĐỘNG LẠI SERVER</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <aside id="detailPanel" class="detail-panel" aria-hidden="true">
+    <div class="detail-head">
+      <div><p class="eyebrow">CHI TIẾT NHIỆM VỤ</p><h2 id="detailDevice">--</h2></div>
+      <button id="closeDetail" class="icon-button" title="Đóng"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div id="detailContent" class="detail-content"></div>
+    <div id="distanceBox" class="distance-box d-none"></div>
+    <div id="detailActions" class="detail-actions"></div>
+  </aside>
+  <div id="panelBackdrop" class="panel-backdrop"></div>
+
+  <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+      <div class="modal-header"><h2 class="modal-title fs-5">Xác nhận tiếp nhận vị trí</h2><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body"><label for="confirmedBy" class="form-label">Đội hoặc nhân viên cứu hộ</label><input id="confirmedBy" class="form-control" maxlength="255" placeholder="Đội cứu hộ 01" autocomplete="organization"></div>
+      <div class="modal-footer"><button class="btn btn-outline-light" data-bs-dismiss="modal">Hủy</button><button id="submitConfirm" class="btn btn-warning"><i class="bi bi-check2-circle"></i> Xác nhận nhiệm vụ</button></div>
+    </div></div>
+  </div>
+
+  <div class="toast-container position-fixed top-0 end-0 p-3">
+    <div id="appToast" class="toast" role="alert"><div class="toast-header"><i id="toastIcon" class="bi bi-info-circle-fill me-2"></i><strong id="toastTitle" class="me-auto">Thông báo</strong><button class="btn-close btn-close-white" data-bs-dismiss="toast"></button></div><div id="toastMessage" class="toast-body"></div></div>
+  </div>
+
+  <script src="/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/map.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

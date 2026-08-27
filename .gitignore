@@ -1,0 +1,28 @@
+# --- Node / web ---
+node_modules/
+npm-debug.log*
+*.log
+.npm-cache/
+.electron-cache/
+.electron-builder-cache/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+
+# --- Android / Gradle ---
+.gradle/
+build/
+*/build/
+.idea/
+*.iml
+local.properties
+.cxx/
+captures/
+*.apk
+*.aab
+
+# --- OS ---
+.DS_Store
+Thumbs.db

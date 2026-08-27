@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">GPS</string>
+    <string name="first_fragment_label">Gửi GPS qua BLE</string>
+    <string name="screen_title">Điện thoại → ESP32-S3 → E32</string>
+    <string name="device_hint">Thiết bị BLE: GPS-ESP32</string>
+    <string name="status_not_connected">Chưa kết nối</string>
+    <string name="location_waiting">Chưa có vị trí</string>
+    <string name="connect">Quét và kết nối</string>
+    <string name="disconnect">Ngắt kết nối</string>
+    <string name="start_sending">Bắt đầu gửi GPS</string>
+    <string name="stop_sending">Dừng gửi GPS</string>
+</resources>

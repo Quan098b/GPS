@@ -1,0 +1,11 @@
+node_modules/
+.npm-cache/
+.electron-cache/
+.electron-builder-cache/
+.env
+npm-debug.log*
+*.log
+.DS_Store
+.vscode/
+coverage/
+dist/
