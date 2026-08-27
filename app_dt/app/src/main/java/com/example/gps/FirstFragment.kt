@@ -10,7 +10,6 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -23,8 +22,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelUuid
 import android.provider.Settings
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -141,16 +140,14 @@ class FirstFragment : Fragment(), LocationListener {
             showStatus("Dien thoai khong ho tro quet BLE")
             return
         }
+        Log.d(TAG, "Bat dau quet BLE (khong loc Service UUID, loc theo ten $DEVICE_NAME)")
         showStatus("Dang tim $DEVICE_NAME...")
         scanning = true
         binding.buttonConnect.isEnabled = false
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(SERVICE_UUID))
-            .build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        scanner.startScan(listOf(filter), settings, scanCallback)
+        scanner.startScan(null, settings, scanCallback)
         mainHandler.postDelayed(scanTimeout, SCAN_TIMEOUT_MS)
     }
 
@@ -167,9 +164,13 @@ class FirstFragment : Fragment(), LocationListener {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (!scanning) return
+            val name = result.device.name ?: result.scanRecord?.deviceName
+            if (name != DEVICE_NAME) return
+            Log.d(TAG, "Tim thay $DEVICE_NAME, dia chi: ${result.device.address}")
             stopScan()
             val appContext = this@FirstFragment.context ?: return
-            showStatus("Dang ket noi ${result.device.name ?: DEVICE_NAME}...")
+            showStatus("Tim thay $DEVICE_NAME, dang ket noi...")
+            Log.d(TAG, "Goi connectGatt toi ${result.device.address}")
             bluetoothGatt = result.device.connectGatt(
                 appContext,
                 false,
@@ -181,6 +182,7 @@ class FirstFragment : Fragment(), LocationListener {
         override fun onScanFailed(errorCode: Int) {
             scanning = false
             mainHandler.removeCallbacks(scanTimeout)
+            Log.e(TAG, "Quet BLE loi: $errorCode")
             showStatus("Quet BLE loi: $errorCode")
             mainHandler.post { _binding?.buttonConnect?.isEnabled = true }
         }
@@ -189,12 +191,14 @@ class FirstFragment : Fragment(), LocationListener {
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            Log.d(TAG, "onConnectionStateChange status=$status newState=$newState")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    showStatus("Da ket noi, dang doc dich vu...")
-                    if (!gatt.requestMtu(128)) gatt.discoverServices()
+                    showStatus("Da ket noi ESP32, dang doc dich vu...")
+                    gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    Log.d(TAG, "Da ngat ket noi BLE")
                     gpsCharacteristic = null
                     bleReady = false
                     pendingManualSend = false
@@ -206,19 +210,30 @@ class FirstFragment : Fragment(), LocationListener {
             }
         }
 
-        @SuppressLint("MissingPermission")
-        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            gatt.discoverServices()
-        }
-
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            val characteristic = gatt.getService(SERVICE_UUID)
-                ?.getCharacteristic(CHARACTERISTIC_UUID)
-            if (status != BluetoothGatt.GATT_SUCCESS || characteristic == null) {
+            Log.d(TAG, "onServicesDiscovered status=$status")
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.e(TAG, "discoverServices that bai, status=$status")
+                showStatus("Doc dich vu BLE that bai")
+                disconnect()
+                return
+            }
+            val service = gatt.getService(SERVICE_UUID)
+            if (service == null) {
+                Log.e(TAG, "Khong tim thay Service $SERVICE_UUID")
                 showStatus("ESP32 khong co dich vu GPS yeu cau")
                 disconnect()
                 return
             }
+            Log.d(TAG, "Da tim thay Service $SERVICE_UUID")
+            val characteristic = service.getCharacteristic(CHARACTERISTIC_UUID)
+            if (characteristic == null) {
+                Log.e(TAG, "Khong tim thay Characteristic $CHARACTERISTIC_UUID")
+                showStatus("ESP32 khong co characteristic GPS yeu cau")
+                disconnect()
+                return
+            }
+            Log.d(TAG, "Da tim thay Characteristic $CHARACTERISTIC_UUID, BLE san sang")
             gpsCharacteristic = characteristic
             bleReady = true
             mainHandler.post {
@@ -235,6 +250,7 @@ class FirstFragment : Fragment(), LocationListener {
 
     @SuppressLint("MissingPermission")
     private fun disconnect() {
+        Log.d(TAG, "disconnect() duoc goi")
         stopScan()
         stopLocationTracking()
         gpsCharacteristic = null
@@ -348,7 +364,7 @@ class FirstFragment : Fragment(), LocationListener {
         val gatt = bluetoothGatt ?: return false
         val characteristic = gpsCharacteristic ?: return false
         val bytes = payload.toByteArray(StandardCharsets.UTF_8)
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             gatt.writeCharacteristic(
                 characteristic,
                 bytes,
@@ -360,6 +376,9 @@ class FirstFragment : Fragment(), LocationListener {
             @Suppress("DEPRECATION")
             gatt.writeCharacteristic(characteristic)
         }
+        if (success) Log.d(TAG, "BLE write thanh cong (${bytes.size} bytes)")
+        else Log.e(TAG, "BLE write that bai")
+        return success
     }
 
     private fun showStatus(message: String) {
@@ -397,6 +416,7 @@ class FirstFragment : Fragment(), LocationListener {
     }
 
     companion object {
+        private const val TAG = "GPS_BLE"
         private const val DEVICE_NAME = "GPS-ESP32"
         private const val DEVICE_ID = "RESCUE-001"
         private const val DEFAULT_MESSAGE = "Can cuu ho"
