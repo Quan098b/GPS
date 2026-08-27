@@ -13,6 +13,7 @@ const { checkDatabase, closePool } = require('./config/database');
 const deviceRoutes = require('./routes/deviceRoutes');
 const rescueRoutes = require('./routes/rescueRoutes');
 const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
+const { startFirebaseSosListener, stopFirebaseSosListener } = require('./services/firebaseSosService');
 
 let runtime = null;
 
@@ -117,6 +118,7 @@ async function startServer(options = {}) {
       runtime.state.host = host;
       runtime.state.startedAt = new Date().toISOString();
       runtime.state.logger.info?.(`Express server started on ${host}:${port}`);
+      await startFirebaseSosListener({ io: runtime.io, logger: runtime.state.logger });
       return getServerInfo();
     } catch (error) {
       if (error.code !== 'EADDRINUSE' || offset === maxAttempts - 1) {
@@ -132,6 +134,7 @@ async function startServer(options = {}) {
 async function stopServer(options = {}) {
   const current = runtime;
   runtime = null;
+  await stopFirebaseSosListener();
   if (current) {
     await new Promise((resolve) => current.io.close(() => resolve()));
     if (current.server.listening) await new Promise((resolve) => current.server.close(() => resolve()));

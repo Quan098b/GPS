@@ -12,24 +12,15 @@
 // WIFI
 // ======================================================
 
-const char *WIFI_SSID = "khanhquan";
+const char *WIFI_SSID = "khanh quan";
 const char *WIFI_PASSWORD = "31122001az";
 
-
 // ======================================================
-// FIREBASE REALTIME DATABASE
+// FIREBASE BASE URL
 // ======================================================
-//
-// Database:
-// https://gpshelp-22dc8-default-rtdb.asia-southeast1.firebasedatabase.app
-//
-// POST vao:
-// /sos.json
-//
 
-const char *FIREBASE_URL =
-  "https://gpshelp-22dc8-default-rtdb.asia-southeast1.firebasedatabase.app/sos.json";
-
+const char *FIREBASE_BASE_URL =
+  "https://gpshelp-22dc8-default-rtdb.asia-southeast1.firebasedatabase.app";
 
 // ======================================================
 // BLE
@@ -43,48 +34,21 @@ static const char *SERVICE_UUID =
 static const char *CHARACTERISTIC_UUID =
   "12345678-1234-5678-1234-56789abcdef1";
 
-
 BLECharacteristic *gpsCharacteristic = nullptr;
 
-volatile bool phoneConnected = false;
-
-
 // ======================================================
-// DU LIEU SOS
-//
-// FORMAT TU DIEN THOAI:
-//
-// SOS|RESCUE-001|latitude|longitude|accuracy|timestamp|message
-//
-// VD:
-//
-// SOS|RESCUE-001|21.594500|105.848200|4.8|1787851234567|Toi bi thuong
-//
+// DU LIEU NHAN TU DIEN THOAI
 // ======================================================
 
-struct RescueData {
+String pendingPayload = "";
 
-  String type;
-
-  String deviceId;
-
-  double latitude;
-  double longitude;
-
-  float accuracy;
-
-  String timestamp;
-
-  String message;
-};
-
+volatile bool hasPendingPayload = false;
 
 // ======================================================
-// ESCAPE JSON
+// JSON ESCAPE
 // ======================================================
 
 String jsonEscape(String input) {
-
   input.replace("\\", "\\\\");
   input.replace("\"", "\\\"");
   input.replace("\n", " ");
@@ -93,47 +57,65 @@ String jsonEscape(String input) {
   return input;
 }
 
-
 // ======================================================
-// PARSE PAYLOAD
+// WIFI
 // ======================================================
 
-bool parseRescuePayload(
-  String payload,
-  RescueData &data
-) {
-
-  payload.trim();
-
-  if (!payload.startsWith("SOS|")) {
-
-    Serial.println(
-      "[PARSE] Khong phai goi SOS"
-    );
-
-    return false;
+void connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return;
   }
 
+  WiFi.mode(WIFI_STA);
+
+  WiFi.begin(
+    WIFI_SSID,
+    WIFI_PASSWORD
+  );
+
+  unsigned long start = millis();
+
+  while (
+    WiFi.status() != WL_CONNECTED &&
+    millis() - start < 10000
+  ) {
+    delay(200);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("[WIFI] IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("[WIFI] Loi ket noi");
+  }
+}
+
+// ======================================================
+// GUI FIREBASE
+// ======================================================
+
+bool sendToFirebase(String payload) {
+  payload.trim();
+
+  // ====================================================
+  // FORMAT TU DIEN THOAI:
+  //
+  // SOS|RESCUE-001|lat|lng|accuracy|timestamp|message
+  //
+  // ====================================================
 
   String fields[7];
 
   int fieldIndex = 0;
   int startIndex = 0;
 
-
-  for (
-    int i = 0;
-    i <= payload.length();
-    i++
-  ) {
-
+  for (int i = 0; i <= payload.length(); i++) {
     if (
       i == payload.length() ||
       payload.charAt(i) == '|'
     ) {
 
       if (fieldIndex < 7) {
-
         fields[fieldIndex] =
           payload.substring(
             startIndex,
@@ -141,347 +123,193 @@ bool parseRescuePayload(
           );
 
         fieldIndex++;
-
       }
 
       startIndex = i + 1;
     }
   }
 
+  // ====================================================
+  // KIEM TRA PAYLOAD
+  // ====================================================
 
   if (fieldIndex < 7) {
-
-    Serial.print(
-      "[PARSE] Thieu truong: "
-    );
-
-    Serial.println(
-      fieldIndex
-    );
-
+    Serial.println("[DATA] Payload loi");
     return false;
   }
 
+  String type = fields[0];
+  String deviceId = fields[1];
 
-  data.type =
-    fields[0];
-
-  data.deviceId =
-    fields[1];
-
-  data.latitude =
+  double latitude =
     fields[2].toDouble();
 
-  data.longitude =
+  double longitude =
     fields[3].toDouble();
 
-  data.accuracy =
+  float accuracy =
     fields[4].toFloat();
 
-  data.timestamp =
+  String timestamp =
     fields[5];
 
-  data.message =
+  String message =
     fields[6];
 
+  // ====================================================
+  // KIEM TRA LOAI SOS
+  // ====================================================
 
-  // ================================================
-  // VALIDATE GPS
-  // ================================================
-
-  if (
-    data.latitude < -90.0 ||
-    data.latitude > 90.0
-  ) {
-
-    Serial.println(
-      "[PARSE] Latitude khong hop le"
-    );
-
+  if (type != "SOS") {
+    Serial.println("[DATA] Khong phai SOS");
     return false;
   }
 
+  // ====================================================
+  // KIEM TRA GPS
+  // ====================================================
 
   if (
-    data.longitude < -180.0 ||
-    data.longitude > 180.0
+    latitude < -90.0 ||
+    latitude > 90.0 ||
+    longitude < -180.0 ||
+    longitude > 180.0
   ) {
-
-    Serial.println(
-      "[PARSE] Longitude khong hop le"
-    );
-
+    Serial.println("[GPS] Toa do khong hop le");
     return false;
   }
 
+  // ====================================================
+  // CHI IN VI TRI + TIN NHAN
+  // ====================================================
 
-  return true;
-}
+  Serial.print("[GPS] ");
+  Serial.print(latitude, 6);
+  Serial.print(", ");
+  Serial.println(longitude, 6);
 
+  Serial.print("[MSG] ");
+  Serial.println(message);
 
-// ======================================================
-// WIFI CONNECT
-// ======================================================
-
-void connectWiFi() {
-
-  if (
-    WiFi.status() == WL_CONNECTED
-  ) {
-
-    return;
-  }
-
-
-  Serial.println();
-
-  Serial.print(
-    "[WIFI] Dang ket noi: "
-  );
-
-  Serial.println(
-    WIFI_SSID
-  );
-
-
-  WiFi.mode(
-    WIFI_STA
-  );
-
-
-  WiFi.begin(
-    WIFI_SSID,
-    WIFI_PASSWORD
-  );
-
-
-  unsigned long started =
-    millis();
-
-
-  while (
-    WiFi.status() != WL_CONNECTED &&
-    millis() - started < 15000
-  ) {
-
-    delay(500);
-
-    Serial.print(".");
-  }
-
-
-  Serial.println();
-
-
-  if (
-    WiFi.status() == WL_CONNECTED
-  ) {
-
-    Serial.println(
-      "[WIFI] Da ket noi"
-    );
-
-    Serial.print(
-      "[WIFI] IP: "
-    );
-
-    Serial.println(
-      WiFi.localIP()
-    );
-
-  } else {
-
-    Serial.println(
-      "[WIFI] Ket noi that bai"
-    );
-  }
-}
-
-
-// ======================================================
-// GUI FIREBASE
-// ======================================================
-
-bool sendToFirebase(
-  RescueData &data
-) {
-
-  if (
-    WiFi.status() != WL_CONNECTED
-  ) {
-
-    connectWiFi();
-  }
-
-
-  if (
-    WiFi.status() != WL_CONNECTED
-  ) {
-
-    Serial.println(
-      "[FIREBASE] Khong co WiFi"
-    );
-
-    return false;
-  }
-
-
-  // ================================================
+  // ====================================================
   // TAO JSON
-  // ================================================
+  // ====================================================
 
   String json = "{";
 
-
   json +=
     "\"device_id\":\"" +
-    jsonEscape(data.deviceId) +
+    jsonEscape(deviceId) +
     "\",";
-
 
   json +=
     "\"latitude\":" +
-    String(data.latitude, 6) +
+    String(latitude, 6) +
     ",";
-
 
   json +=
     "\"longitude\":" +
-    String(data.longitude, 6) +
+    String(longitude, 6) +
     ",";
-
 
   json +=
     "\"accuracy\":" +
-    String(data.accuracy, 1) +
+    String(accuracy, 1) +
     ",";
-
 
   json +=
     "\"timestamp\":\"" +
-    jsonEscape(data.timestamp) +
+    jsonEscape(timestamp) +
     "\",";
-
 
   json +=
     "\"message\":\"" +
-    jsonEscape(data.message) +
+    jsonEscape(message) +
     "\",";
 
-
   json +=
-    "\"status\":\"waiting\",";
-
-
-  json +=
-    "\"source\":\"demo_ble\"";
-
+    "\"status\":\"waiting\"";
 
   json += "}";
 
+  // ====================================================
+  // WIFI
+  // ====================================================
 
-  Serial.println();
+  if (WiFi.status() != WL_CONNECTED) {
+    connectWiFi();
+  }
 
-  Serial.println(
-    "[FIREBASE] JSON:"
-  );
-
-  Serial.println(
-    json
-  );
-
-
-  // ================================================
-  // HTTPS
-  // ================================================
-
-  WiFiClientSecure client;
-
-  // DEMO:
-  // bo qua certificate verification
-  client.setInsecure();
-
-
-  HTTPClient http;
-
-
-  if (
-    !http.begin(
-      client,
-      FIREBASE_URL
-    )
-  ) {
-
-    Serial.println(
-      "[FIREBASE] http.begin that bai"
-    );
-
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[FIREBASE] Khong co WiFi");
     return false;
   }
 
+  // ====================================================
+  // URL CO DINH THEO DEVICE ID
+  //
+  // VD:
+  // /sos/RESCUE-001.json
+  // ====================================================
+
+  String url =
+    String(FIREBASE_BASE_URL) +
+    "/sos/" +
+    deviceId +
+    ".json";
+
+  // ====================================================
+  // HTTPS
+  // ====================================================
+
+  WiFiClientSecure client;
+
+  // Demo
+  client.setInsecure();
+
+  HTTPClient http;
+
+  if (!http.begin(client, url)) {
+    Serial.println("[FIREBASE] HTTP init loi");
+    return false;
+  }
 
   http.addHeader(
     "Content-Type",
     "application/json"
   );
 
+  // ====================================================
+  // PUT = GHI DE
+  //
+  // KHONG DUNG POST
+  // ====================================================
 
-  int httpCode =
-    http.POST(json);
-
-
-  String response =
-    http.getString();
-
+  int code =
+    http.PUT(json);
 
   http.end();
 
-
-  // ================================================
+  // ====================================================
   // RESULT
-  // ================================================
-
-  Serial.print(
-    "[FIREBASE] HTTP: "
-  );
-
-  Serial.println(
-    httpCode
-  );
-
-
-  Serial.print(
-    "[FIREBASE] Response: "
-  );
-
-  Serial.println(
-    response
-  );
-
+  // ====================================================
 
   if (
-    httpCode >= 200 &&
-    httpCode < 300
+    code >= 200 &&
+    code < 300
   ) {
-
-    Serial.println(
-      "[FIREBASE] GUI THANH CONG"
-    );
-
+    Serial.println("[FIREBASE] OK");
     return true;
   }
 
-
-  Serial.println(
-    "[FIREBASE] GUI THAT BAI"
-  );
+  Serial.print("[FIREBASE] Loi: ");
+  Serial.println(code);
 
   return false;
 }
 
-
 // ======================================================
-// BLE WRITE CALLBACK
+// BLE NHAN DU LIEU
 // ======================================================
 
 class GpsCallbacks :
@@ -494,159 +322,21 @@ class GpsCallbacks :
     String value =
       characteristic->getValue();
 
-
-    if (
-      value.length() == 0
-    ) {
-
+    if (value.length() == 0) {
       return;
     }
 
+    // ==================================================
+    // KHONG GUI FIREBASE TRONG CALLBACK BLE
+    //
+    // CHI LUU LAI
+    // ==================================================
 
-    Serial.println();
+    pendingPayload = value;
 
-    Serial.println(
-      "========================================"
-    );
-
-    Serial.println(
-      "[BLE] NHAN YEU CAU CUU HO"
-    );
-
-    Serial.println(
-      "========================================"
-    );
-
-
-    Serial.print(
-      "[BLE] Payload: "
-    );
-
-    Serial.println(
-      value
-    );
-
-
-    // ================================================
-    // PARSE
-    // ================================================
-
-    RescueData rescue;
-
-
-    if (
-      !parseRescuePayload(
-        value,
-        rescue
-      )
-    ) {
-
-      Serial.println(
-        "[BLE] Payload khong hop le"
-      );
-
-      return;
-    }
-
-
-    // ================================================
-    // IN THONG TIN
-    // ================================================
-
-    Serial.println();
-
-    Serial.print(
-      "Device ID : "
-    );
-
-    Serial.println(
-      rescue.deviceId
-    );
-
-
-    Serial.print(
-      "Latitude  : "
-    );
-
-    Serial.println(
-      rescue.latitude,
-      6
-    );
-
-
-    Serial.print(
-      "Longitude : "
-    );
-
-    Serial.println(
-      rescue.longitude,
-      6
-    );
-
-
-    Serial.print(
-      "Accuracy  : "
-    );
-
-    Serial.print(
-      rescue.accuracy,
-      1
-    );
-
-    Serial.println(
-      " m"
-    );
-
-
-    Serial.print(
-      "Timestamp : "
-    );
-
-    Serial.println(
-      rescue.timestamp
-    );
-
-
-    Serial.print(
-      "Message   : "
-    );
-
-    Serial.println(
-      rescue.message
-    );
-
-
-    Serial.println();
-
-
-    // ================================================
-    // FIREBASE
-    // ================================================
-
-    if (
-      sendToFirebase(
-        rescue
-      )
-    ) {
-
-      Serial.println(
-        "[SOS] DA DAY LEN FIREBASE"
-      );
-
-    } else {
-
-      Serial.println(
-        "[SOS] KHONG GUI DUOC FIREBASE"
-      );
-    }
-
-
-    Serial.println(
-      "========================================"
-    );
+    hasPendingPayload = true;
   }
 };
-
 
 // ======================================================
 // BLE SERVER CALLBACK
@@ -659,196 +349,144 @@ class ServerCallbacks :
     BLEServer *server
   ) override {
 
-    phoneConnected = true;
-
-
-    Serial.println();
-
     Serial.println(
       "[BLE] Dien thoai da ket noi"
     );
   }
 
-
   void onDisconnect(
     BLEServer *server
   ) override {
 
-    phoneConnected = false;
-
-
     BLEDevice::startAdvertising();
 
-
-    Serial.println();
-
     Serial.println(
-      "[BLE] Dien thoai da ngat"
-    );
-
-    Serial.println(
-      "[BLE] Dang advertising lai"
+      "[BLE] Mat ket noi"
     );
   }
 };
 
-
 // ======================================================
-// SETUP
+// START BLE
 // ======================================================
 
-void setup() {
-
-  Serial.begin(
-    115200
-  );
-
-
-  delay(
-    1000
-  );
-
-
-  Serial.println();
-
-  Serial.println(
-    "========================================"
-  );
-
-  Serial.println(
-    " GPS RESCUE - ESP32-S3"
-  );
-
-  Serial.println(
-    " PHONE -> BLE -> ESP32 -> FIREBASE"
-  );
-
-  Serial.println(
-    "========================================"
-  );
-
-
-  // ====================================================
-  // BLE (phai khoi dong truoc WiFi de advertising ngay,
-  // khong bi cho 15s neu WiFi sai/cham)
-  // ====================================================
-
+void startBLE() {
   BLEDevice::init(
     DEVICE_NAME
   );
-
 
   BLEDevice::setMTU(
     128
   );
 
-
   BLEServer *server =
     BLEDevice::createServer();
-
 
   server->setCallbacks(
     new ServerCallbacks()
   );
-
 
   BLEService *service =
     server->createService(
       SERVICE_UUID
     );
 
-
   gpsCharacteristic =
     service->createCharacteristic(
       CHARACTERISTIC_UUID,
-
       BLECharacteristic::PROPERTY_WRITE
     );
-
 
   gpsCharacteristic->setCallbacks(
     new GpsCallbacks()
   );
 
-
   service->start();
 
+  // ====================================================
+  // ADVERTISING
+  // ====================================================
 
   BLEAdvertising *advertising =
     BLEDevice::getAdvertising();
-
 
   advertising->addServiceUUID(
     SERVICE_UUID
   );
 
-
   advertising->setScanResponse(
     true
   );
 
-
   BLEDevice::startAdvertising();
 
-
-  // ====================================================
-  // READY
-  // ====================================================
-
-  Serial.println();
-
   Serial.println(
-    "[BLE] GPS-ESP32 dang advertising"
+    "[BLE] GPS-ESP32 san sang"
   );
-
-  Serial.println();
-
-  Serial.println(
-    "Dang cho dien thoai ket noi..."
-  );
-
-  Serial.println();
-
-
-  // ====================================================
-  // WIFI (goi SAU khi BLE da advertising, khong reset
-  // hay dung BLE neu WiFi loi/cham)
-  // ====================================================
-
-  connectWiFi();
 }
 
+// ======================================================
+// SETUP
+// ======================================================
+
+void setup() {
+  Serial.begin(
+    115200
+  );
+
+  delay(
+    500
+  );
+
+  // BLE truoc
+  startBLE();
+
+  // WiFi sau
+  connectWiFi();
+}
 
 // ======================================================
 // LOOP
 // ======================================================
 
 void loop() {
+  // ====================================================
+  // GUI PAYLOAD LEN FIREBASE
+  // ====================================================
 
-  // Tu dong noi lai WiFi neu mat mang
+  if (hasPendingPayload) {
+    hasPendingPayload = false;
 
-  if (
-    WiFi.status() != WL_CONNECTED
-  ) {
+    String payload =
+      pendingPayload;
+
+    pendingPayload = "";
+
+    sendToFirebase(
+      payload
+    );
+  }
+
+  // ====================================================
+  // TU DONG NOI LAI WIFI
+  // ====================================================
+
+  if (WiFi.status() != WL_CONNECTED) {
 
     static unsigned long
       lastReconnect = 0;
 
-
     if (
-      millis() -
-      lastReconnect >
+      millis() - lastReconnect >
       10000
     ) {
 
       lastReconnect =
         millis();
 
-
       connectWiFi();
     }
   }
-
 
   delay(
     10

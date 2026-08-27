@@ -55,7 +55,11 @@
   function renderAll() {
     renderStats();
     renderList();
-    RescueMap.render(state.events, selectEvent);
+    // Chi hien marker cho sự kien dang hoat dong (SOS/CONFIRMED/RESCUING).
+    // Khi mot su kien chuyen sang RESCUED/CANCELLED, no tu dong bien mat
+    // khoi ban do (RescueMap.render go bo moi marker khong con trong danh
+    // sach nay), giu ban do gon va nhanh khi lich su tich luy nhieu.
+    RescueMap.render(state.events.filter((event) => activeStatuses.includes(event.status)), selectEvent);
   }
 
   function filteredEvents() {
@@ -200,7 +204,11 @@
     socket.on('gps:update', (update) => {
       if (!update.event_id) return;
       const current = state.events.find((event) => Number(event.id) === Number(update.event_id));
-      if (current) { Object.assign(current, update, { id: Number(update.event_id) }); RescueMap.upsert(current, selectEvent); renderList(); }
+      if (current) {
+        Object.assign(current, update, { id: Number(update.event_id) });
+        if (activeStatuses.includes(current.status)) RescueMap.upsert(current, selectEvent);
+        renderList();
+      }
     });
   }
 

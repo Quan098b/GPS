@@ -9,3 +9,9 @@ npm-debug.log*
 .vscode/
 coverage/
 dist/
+
+# Firebase Admin SDK service account credentials - KHONG BAO GIO commit
+SDK.json
+*firebase-admin*.json
+*service-account*.json
+*serviceAccount*.json

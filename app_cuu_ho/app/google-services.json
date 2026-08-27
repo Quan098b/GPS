@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "778890386831",
+    "firebase_url": "https://gpshelp-22dc8-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "gpshelp-22dc8",
+    "storage_bucket": "gpshelp-22dc8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:778890386831:android:b806983a8dd4f96666bffa",
+        "android_client_info": {
+          "package_name": "com.example.cuu_ho"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD5jDkizZ_5ux1SjWMXDFNtp6zAyPJnH2U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
