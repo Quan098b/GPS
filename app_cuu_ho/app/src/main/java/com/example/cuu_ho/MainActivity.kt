@@ -1,24 +1,43 @@
 package com.example.cuu_ho
 
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
-import com.google.android.material.snackbar.Snackbar
-import androidx.appcompat.app.AppCompatActivity
+import android.util.Log
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.os.bundleOf
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.navigation.findNavController
+import com.example.cuu_ho.data.RescueRepository
+import androidx.navigation.NavController
 import androidx.navigation.fragment.NavHostFragment
 import androidx.navigation.ui.AppBarConfiguration
 import androidx.navigation.ui.navigateUp
 import androidx.navigation.ui.setupActionBarWithNavController
-import android.view.Menu
-import android.view.MenuItem
 import com.example.cuu_ho.databinding.ActivityMainBinding
+import com.google.firebase.messaging.FirebaseMessaging
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var appBarConfiguration: AppBarConfiguration
     private lateinit var binding: ActivityMainBinding
+    private lateinit var navController: NavController
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            // Khong crash, chi bao cho nguoi dung biet se khong nhan duoc canh bao.
+            android.widget.Toast.makeText(
+                this,
+                getString(R.string.toast_notification_permission_denied),
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -36,37 +55,75 @@ class MainActivity : AppCompatActivity() {
 
         val navHostFragment =
             supportFragmentManager.findFragmentById(R.id.nav_host_fragment_content_main) as NavHostFragment
-        val navController = navHostFragment.navController
+        navController = navHostFragment.navController
 
         appBarConfiguration = AppBarConfiguration(navController.graph)
         setupActionBarWithNavController(navController, appBarConfiguration)
 
-        binding.fab.setOnClickListener { view ->
-            Snackbar.make(view, "Replace with your own action", Snackbar.LENGTH_LONG)
-                .setAction("Action", null)
-                .setAnchorView(R.id.fab).show()
+        RescueFirebaseMessagingService.ensureChannel(this)
+        requestNotificationPermissionIfNeeded()
+        subscribeToRescueTeamTopic()
+
+        handleNotificationIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        RescueRepository.start()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        RescueRepository.stop()
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!granted) notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    private fun subscribeToRescueTeamTopic() {
+        FirebaseMessaging.getInstance().subscribeToTopic(getString(R.string.rescue_team_topic))
+            .addOnCompleteListener { task ->
+                if (task.isSuccessful) Log.d(TAG, "Da subscribe topic rescue_team")
+                else Log.w(TAG, "Subscribe topic rescue_team that bai", task.exception)
+            }
+    }
+
+    /**
+     * Neu Intent den tu khi nguoi dung nham vao notification FCM (co
+     * device_id trong extras), dieu huong thang toi man hinh chi tiet yeu
+     * cau cuu ho tuong ung. Neu app da mo san, khong tao lai Activity/luong
+     * dieu huong trung lap (nho launchMode singleTop + onNewIntent).
+     */
+    private fun handleNotificationIntent(intent: Intent?) {
+        val deviceId = intent?.getStringExtra(EXTRA_DEVICE_ID) ?: return
+        if (navController.currentDestination?.id == R.id.RescueDetailFragment &&
+            navController.currentBackStackEntry?.arguments?.getString(ARG_DEVICE_ID) == deviceId
+        ) {
+            return
         }
+        navController.navigate(R.id.RescueDetailFragment, bundleOf(ARG_DEVICE_ID to deviceId))
     }
 
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        // Inflate the menu; this adds items to the action bar if it is present.
-        menuInflater.inflate(R.menu.menu_main, menu)
-        return true
-    }
+    override fun onSupportNavigateUp(): Boolean = navController.navigateUp(appBarConfiguration) || super.onSupportNavigateUp()
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        // Handle action bar item clicks here. The action bar will
-        // automatically handle clicks on the Home/Up button, so long
-        // as you specify a parent activity in AndroidManifest.xml.
-        return when (item.itemId) {
-            R.id.action_settings -> true
-            else -> super.onOptionsItemSelected(item)
-        }
-    }
+    companion object {
+        private const val TAG = "MainActivity"
 
-    override fun onSupportNavigateUp(): Boolean {
-        val navController = findNavController(R.id.nav_host_fragment_content_main)
-        return navController.navigateUp(appBarConfiguration)
-                || super.onSupportNavigateUp()
+        const val ARG_DEVICE_ID = "deviceId"
+        const val EXTRA_DEVICE_ID = "device_id"
+        const val EXTRA_LATITUDE = "latitude"
+        const val EXTRA_LONGITUDE = "longitude"
+        const val EXTRA_MESSAGE = "message"
+        const val EXTRA_TIMESTAMP = "timestamp"
     }
 }

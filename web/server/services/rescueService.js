@@ -191,6 +191,21 @@ async function transitionRescue(id, targetStatus, confirmedBy = null) {
   }
 }
 
+// Tim rescue_event dang hoat dong (SOS/CONFIRMED/RESCUING) gan nhat theo
+// device_id. Dung boi rescueActionsService de tim event MySQL tuong ung
+// mot action tu app doi cuu ho, vi app chi biet device_id (tu Firebase),
+// khong biet rescue_event.id cua MySQL.
+async function getActiveRescueByDeviceId(deviceId) {
+  const pool = getPool();
+  const [rows] = await pool.execute(
+    `SELECT * FROM rescue_events
+     WHERE device_id = ? AND status IN ('SOS','CONFIRMED','RESCUING')
+     ORDER BY created_at DESC LIMIT 1`,
+    [deviceId]
+  );
+  return rows[0] || null;
+}
+
 async function getDeviceSummary() {
   const pool = getPool();
   const [rows] = await pool.execute(
@@ -210,5 +225,6 @@ module.exports = {
   listRescues,
   getRescue,
   transitionRescue,
+  getActiveRescueByDeviceId,
   getDeviceSummary
 };

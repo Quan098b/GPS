@@ -1,8 +1,11 @@
 const { getDatabase } = require('firebase-admin/database');
+const { getMessaging } = require('firebase-admin/messaging');
 const rescueService = require('./rescueService');
-const { getFirebaseApp, closeFirebaseApp } = require('../config/firebase');
+const { getFirebaseApp } = require('../config/firebase');
 
 const SOS_PATH = 'sos';
+const NOTIFIED_STATE_PATH = 'server_state/notified';
+const RESCUE_TEAM_TOPIC = 'rescue_team';
 
 // device_id -> { terminalTimestamp, markedAt }. terminalTimestamp la moc
 // (cung khong gian voi Firebase timestamp - epoch ms) ma rescue_event cua
@@ -83,11 +86,87 @@ function emitIngestResult(io, result) {
   if (result.event) io.emit(result.isNewEvent ? 'rescue:new' : 'rescue:update', result.event);
 }
 
+// ======================================================
+// FIREBASE CLOUD MESSAGING (canh bao SOS cho doi cuu ho)
+// ======================================================
+
+async function getNotifiedFlag(app, deviceId) {
+  const snapshot = await getDatabase(app).ref(`${NOTIFIED_STATE_PATH}/${deviceId}`).get();
+  return snapshot.exists() && snapshot.val() === true;
+}
+
+async function setNotifiedFlag(app, deviceId, value) {
+  const ref = getDatabase(app).ref(`${NOTIFIED_STATE_PATH}/${deviceId}`);
+  if (value) await ref.set(true);
+  else await ref.remove();
+}
+
+async function sendSosNotification(app, deviceId, payload, rawTimestamp, logger) {
+  const messageText = payload.message && String(payload.message).trim() ? String(payload.message).trim() : 'Can cuu ho';
+  await getMessaging(app).send({
+    topic: RESCUE_TEAM_TOPIC,
+    notification: {
+      title: 'CÓ YÊU CẦU CỨU HỘ',
+      body: `${deviceId}: ${messageText}`
+    },
+    data: {
+      type: 'SOS',
+      device_id: deviceId,
+      latitude: String(payload.latitude),
+      longitude: String(payload.longitude),
+      accuracy: payload.accuracy == null ? '' : String(payload.accuracy),
+      message: messageText,
+      timestamp: String(rawTimestamp ?? Date.now())
+    },
+    android: {
+      priority: 'high',
+      notification: { channelId: 'rescue_alerts' }
+    }
+  });
+  logger.info?.(`[FCM] Da gui canh bao SOS toi topic ${RESCUE_TEAM_TOPIC} device=${deviceId}`);
+}
+
+// Gui FCM dung 1 lan cho moi dot SOS. Dung /server_state/notified/{deviceId}
+// (KHONG phai field trong /sos/{deviceId}) vi ESP PUT de nguyen node /sos
+// moi lan cap nhat GPS, se xoa mat moi field tu them vao. Neu gui that bai
+// (mang loi...) co la duoc giu false, lan cap nhat GPS tiep theo (child_changed)
+// se tu dong thu gui lai - khong can co che retry rieng.
+async function maybeNotifyNewSos(app, deviceId, payload, rawTimestamp, logger) {
+  if (!app) return;
+  try {
+    if (await getNotifiedFlag(app, deviceId)) return;
+    await sendSosNotification(app, deviceId, payload, rawTimestamp, logger);
+    await setNotifiedFlag(app, deviceId, true);
+  } catch (error) {
+    logger.warn?.(`[FCM] Gui canh bao SOS that bai device=${deviceId}: ${error.message} (se tu thu lai o lan cap nhat GPS tiep theo)`);
+  }
+}
+
+function defaultNotify(app) {
+  return async (deviceId, payload, rawTimestamp, logger) => {
+    await maybeNotifyNewSos(app, deviceId, payload, rawTimestamp, logger);
+  };
+}
+
 // Tao 1 bo xu ly su kien Firebase, khong phu thuoc truc tiep vao
 // firebase-admin nen co the unit test bang cach goi thang voi du lieu gia.
-function createSosHandlers({ io, logger = console, service = rescueService } = {}) {
+// `notify` co the duoc thay the trong test de kiem tra logic "chi gui 1 lan"
+// ma khong can ket noi FCM/Firebase that.
+function createSosHandlers({ io, logger = console, service = rescueService, notify = async () => {} } = {}) {
   async function upsertFromFirebase(deviceId, data, eventLabel) {
     if (!data) return;
+    // ESP luon ghi status "waiting" cho moi lan cap nhat GPS (xem spec /sos).
+    // Backend (rescueActionsService, rescueController) cung ghi vao cung
+    // node nay de cap nhat status = confirmed/rescuing/rescued/failed -
+    // BO QUA nhung ghi do o day, neu khong se tu kich hoat lai chinh minh:
+    // ghi status=rescued -> listener nay thay child_changed -> tuong la
+    // GPS moi -> "hoi sinh" mot su kien da RESCUED thanh SOS moi.
+    const rawStatus = typeof data.status === 'string' ? data.status.toLowerCase() : null;
+    if (rawStatus != null && rawStatus !== 'waiting') {
+      logger.info?.(`[FirebaseSOS] Bo qua ${eventLabel} device=${deviceId} vi status="${rawStatus}" (khong phai du lieu GPS tu ESP)`);
+      return;
+    }
+
     const timestamp = parseFirebaseTimestamp(data.timestamp);
     if (data.timestamp != null && timestamp == null) {
       logger.warn?.(`[FirebaseSOS] timestamp khong hop le device=${deviceId} raw=${data.timestamp}`);
@@ -112,6 +191,12 @@ function createSosHandlers({ io, logger = console, service = rescueService } = {
       if (result.isNewEvent) clearDeviceTerminal(deviceId);
       emitIngestResult(io, result);
       logger.info?.(`[FirebaseSOS] ${eventLabel} device=${deviceId} eventId=${result.event?.id || '-'} isNew=${result.isNewEvent}`);
+      // Chi canh bao doi cuu ho khi trang thai van la SOS moi/dang cho
+      // (chua CONFIRMED/RESCUING/RESCUED/CANCELLED) - tranh spam khi ESP
+      // tiep tuc PUT toa do sau khi nhiem vu da duoc tiep nhan.
+      if (result.event?.status === 'SOS') {
+        await notify(deviceId, payload, data.timestamp, logger);
+      }
     } catch (error) {
       logger.error?.(`[FirebaseSOS] Loi xu ly ${eventLabel} device=${deviceId}: ${error.message}`);
     }
@@ -136,8 +221,7 @@ function createSosHandlers({ io, logger = console, service = rescueService } = {
 
 // Bat dau lang nghe realtime tai /sos. Idempotent: neu da co listener dang
 // chay (vi du Electron restart server noi bo), listener cu se duoc go bo
-// (va Firebase app cu dong hoan toan) truoc khi gan listener moi, tranh
-// nhan trung su kien hoac loi "app already exists".
+// truoc khi gan listener moi, tranh nhan trung su kien.
 async function startFirebaseSosListener({ io, logger = console, service = rescueService } = {}) {
   if (currentListener) {
     await currentListener.stop();
@@ -150,7 +234,7 @@ async function startFirebaseSosListener({ io, logger = console, service = rescue
     return { async stop() {} };
   }
 
-  const handlers = createSosHandlers({ io, logger, service });
+  const handlers = createSosHandlers({ io, logger, service, notify: defaultNotify(app) });
   const database = getDatabase(app);
   database.goOnline();
   const ref = database.ref(SOS_PATH);
@@ -166,15 +250,15 @@ async function startFirebaseSosListener({ io, logger = console, service = rescue
   logger.info?.(`[FirebaseSOS] Dang lang nghe realtime tai /${SOS_PATH}`);
 
   currentListener = {
+    // Chi go listener khoi ref - KHONG dong Firebase Admin app o day, vi
+    // rescueActionsService co the dang dung chung 1 app. Viec dong app
+    // hoan toan (tranh treo tien trinh) do server/app.js dieu phoi sau khi
+    // moi listener Firebase da duoc dung.
     async stop() {
       ref.off('child_added', onAdded);
       ref.off('child_changed', onChanged);
       ref.off('child_removed', onRemoved);
-      // Dong han Firebase Admin app: ref.off()/goOffline() khong huy timer
-      // refresh token noi bo cua SDK, con lai se treo tien trinh Node khi
-      // thoat (vi du "npm test", tat server, thoat Electron).
-      await closeFirebaseApp(logger);
-      logger.info?.('[FirebaseSOS] Da dung listener realtime');
+      logger.info?.('[FirebaseSOS] Da dung listener realtime /sos');
     }
   };
   return currentListener;
@@ -183,7 +267,8 @@ async function startFirebaseSosListener({ io, logger = console, service = rescue
 // Xoa /sos/{deviceId} khoi Firebase. Chi nen goi khi rescue_event tuong ung
 // vua chuyen sang trang thai cuoi cung (mac dinh: RESCUED hoac CANCELLED).
 // Danh mot moc thoi gian "terminal" cho device de chan viec ESP ghi lai
-// du lieu cu tao ra SOS gia sau khi da ket thuc.
+// du lieu cu tao ra SOS gia sau khi da ket thuc. Cung xoa co "notified"
+// de mot dot SOS THAT SU moi sau nay cho thiet bi nay duoc canh bao lai.
 async function removeFirebaseSos(deviceId, logger = console) {
   markDeviceTerminal(deviceId);
   const app = getFirebaseApp(logger);
@@ -192,10 +277,28 @@ async function removeFirebaseSos(deviceId, logger = console) {
     const database = getDatabase(app);
     database.goOnline();
     await database.ref(`${SOS_PATH}/${deviceId}`).remove();
+    await database.ref(`${NOTIFIED_STATE_PATH}/${deviceId}`).remove();
     logger.info?.(`[FirebaseSOS] Da xoa /sos/${deviceId} khoi Firebase`);
     return true;
   } catch (error) {
     logger.warn?.(`[FirebaseSOS] Khong the xoa /sos/${deviceId}: ${error.message}`);
+    return false;
+  }
+}
+
+// Cap nhat /sos/{deviceId}/status (va cac field lien quan) ma KHONG xoa
+// ca node - dung cho CONFIRMED/RESCUING de app doi cuu ho thay trang thai
+// realtime trong khi ESP van tiep tuc cap nhat GPS vao cung node do.
+async function updateFirebaseSosStatus(deviceId, fields, logger = console) {
+  const app = getFirebaseApp(logger);
+  if (!app) return false;
+  try {
+    const database = getDatabase(app);
+    database.goOnline();
+    await database.ref(`${SOS_PATH}/${deviceId}`).update(fields);
+    return true;
+  } catch (error) {
+    logger.warn?.(`[FirebaseSOS] Khong the cap nhat /sos/${deviceId}: ${error.message}`);
     return false;
   }
 }
@@ -233,8 +336,10 @@ module.exports = {
   startFirebaseSosListener,
   stopFirebaseSosListener,
   removeFirebaseSos,
+  updateFirebaseSosStatus,
   shouldRemoveFirebaseOnTransition,
   FIREBASE_CLEANUP_STATUSES,
   TERMINAL_COOLDOWN_MS,
+  RESCUE_TEAM_TOPIC,
   _resetForTest
 };

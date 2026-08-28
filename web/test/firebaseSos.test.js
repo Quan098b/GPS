@@ -179,6 +179,71 @@ test('clearDeviceTerminal immediately lifts the stale guard for a device', () =>
   assert.equal(isStaleAfterTerminal('RESCUE-001', 4000), false);
 });
 
+test('notify (FCM) is called once for a brand-new SOS event but not for later GPS-only updates', async () => {
+  _resetForTest();
+  const notifyCalls = [];
+  const service = {
+    async ingestGps(payload) {
+      return {
+        data: { deviceId: payload.device_id, latitude: payload.latitude, longitude: payload.longitude, accuracy: payload.accuracy, battery: null, rssi: null },
+        event: { id: 3, device_id: payload.device_id, status: 'SOS' },
+        isNewEvent: true
+      };
+    }
+  };
+  const notify = async (deviceId, payload, rawTimestamp) => { notifyCalls.push({ deviceId, payload, rawTimestamp }); };
+  const handlers = createSosHandlers({ io: fakeIo(), logger: silentLogger(), service, notify });
+
+  await handlers.handleChildAdded('RESCUE-001', { latitude: 21.5, longitude: 105.8, message: 'heee', timestamp: '1000' });
+  assert.equal(notifyCalls.length, 1);
+  assert.equal(notifyCalls[0].deviceId, 'RESCUE-001');
+  assert.equal(notifyCalls[0].payload.message, 'heee');
+});
+
+test('notify (FCM) is NOT called once the rescue event has moved past SOS (CONFIRMED/RESCUING/...)', async () => {
+  _resetForTest();
+  const notifyCalls = [];
+  const service = {
+    async ingestGps(payload) {
+      return {
+        data: { deviceId: payload.device_id, latitude: payload.latitude, longitude: payload.longitude, accuracy: payload.accuracy, battery: null, rssi: null },
+        event: { id: 3, device_id: payload.device_id, status: 'CONFIRMED' },
+        isNewEvent: false
+      };
+    }
+  };
+  const notify = async (deviceId) => { notifyCalls.push(deviceId); };
+  const handlers = createSosHandlers({ io: fakeIo(), logger: silentLogger(), service, notify });
+
+  await handlers.handleChildChanged('RESCUE-001', { latitude: 21.55, longitude: 105.85, timestamp: '2000' });
+  assert.equal(notifyCalls.length, 0);
+});
+
+test('a /sos status write made by the backend itself (status != "waiting") is ignored, not re-ingested as GPS', async () => {
+  _resetForTest();
+  let ingestCalled = false;
+  const service = { async ingestGps() { ingestCalled = true; } };
+  const handlers = createSosHandlers({ io: fakeIo(), logger: silentLogger(), service });
+
+  // rescueActionsService.updateFirebaseSosStatus() writes exactly this shape
+  // to /sos/{deviceId} (status only, no fresh latitude/longitude) - it must
+  // not be mistaken for a new GPS ping from the ESP and resurrect the event.
+  await handlers.handleChildChanged('RESCUE-001', {
+    device_id: 'RESCUE-001', latitude: 21.5, longitude: 105.8, message: 'heee', status: 'rescued', timestamp: '9999'
+  });
+  assert.equal(ingestCalled, false);
+});
+
+test('an ESP GPS write (status "waiting") is still ingested normally', async () => {
+  _resetForTest();
+  let ingestCalled = false;
+  const service = { async ingestGps() { ingestCalled = true; return { data: {}, event: { status: 'SOS' }, isNewEvent: true }; } };
+  const handlers = createSosHandlers({ io: fakeIo(), logger: silentLogger(), service });
+
+  await handlers.handleChildAdded('RESCUE-001', { latitude: 21.5, longitude: 105.8, status: 'waiting', timestamp: '1000' });
+  assert.equal(ingestCalled, true);
+});
+
 test('shouldRemoveFirebaseOnTransition only removes Firebase SOS for RESCUED/CANCELLED', () => {
   assert.equal(shouldRemoveFirebaseOnTransition('RESCUED'), true);
   assert.equal(shouldRemoveFirebaseOnTransition('CANCELLED'), true);

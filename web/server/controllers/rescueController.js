@@ -1,5 +1,7 @@
 const rescueService = require('../services/rescueService');
-const { removeFirebaseSos, shouldRemoveFirebaseOnTransition } = require('../services/firebaseSosService');
+const { removeFirebaseSos, updateFirebaseSosStatus, shouldRemoveFirebaseOnTransition } = require('../services/firebaseSosService');
+
+const FIREBASE_STATUS_BY_TARGET = { CONFIRMED: 'confirmed', RESCUING: 'rescuing' };
 
 function validId(value) {
   const id = Number(value);
@@ -36,15 +38,20 @@ function transition(targetStatus) {
       const logger = req.app.get('logger') || console;
       logger.info?.(`Rescue status changed id=${event.id} status=${event.status}`);
 
-      // Chi xoa /sos/{device_id} tren Firebase khi trang thai cuoi cung
-      // (mac dinh RESCUED hoac CANCELLED). Loi xoa Firebase khong duoc
-      // lam rollback trang thai MySQL da cap nhat thanh cong.
-      if (shouldRemoveFirebaseOnTransition(event.status)) {
-        try {
+      // Dong bo trang thai realtime cho app doi cuu ho (app_cuu_ho doc
+      // /sos/{device_id}/status). Loi Firebase khong duoc lam rollback
+      // trang thai MySQL da cap nhat thanh cong - chi log warning.
+      try {
+        const firebaseStatus = FIREBASE_STATUS_BY_TARGET[event.status];
+        if (firebaseStatus) {
+          const fields = { status: firebaseStatus };
+          if (event.status === 'CONFIRMED' && event.confirmed_by) fields.confirmed_by = event.confirmed_by;
+          await updateFirebaseSosStatus(event.device_id, fields, logger);
+        } else if (shouldRemoveFirebaseOnTransition(event.status)) {
           await removeFirebaseSos(event.device_id, logger);
-        } catch (error) {
-          logger.warn?.(`Khong the xoa Firebase SOS cho device=${event.device_id}: ${error.message}`);
         }
+      } catch (error) {
+        logger.warn?.(`Khong the dong bo Firebase SOS cho device=${event.device_id}: ${error.message}`);
       }
 
       res.json({ success: true, message: 'Cap nhat trang thai thanh cong', data: event });
